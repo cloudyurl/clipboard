@@ -1,0 +1,136 @@
+# Option 1 - Single Pod Processing (ShedLock)
+
+## a. Scheduler Execution
+
+1.⁠ ⁠All application pods start.
+2.⁠ ⁠ShedLock ensures only one pod acquires the scheduler lock.
+3.⁠ ⁠Remaining pods exit without processing.
+4.⁠ ⁠The selected pod starts batch execution.
+
+---
+
+## b. Batch Claim
+
+1.⁠ ⁠Atomically claim 100 Pending (⁠ STA201 ⁠) notifications.
+2.⁠ ⁠Commit the transaction.
+3.⁠ ⁠Continue only if records are returned.
+
+---
+
+## c. Notification Processing
+
+1.⁠ ⁠Create 5 worker threads using ExecutorService / Virtual Threads.
+2.⁠ ⁠Process all claimed notifications concurrently.
+3.⁠ ⁠Perform email retries based on business configuration.
+
+---
+
+## d. Status Update
+
+1.⁠ ⁠Email Success → Update notification to ⁠ STA203 (Completed) ⁠.
+2.⁠ ⁠Email Failure → Update notification based on current business rule.
+
+---
+
+## e. Continue Processing
+
+1.⁠ ⁠Atomically claim the next batch of 100 records.
+2.⁠ ⁠Repeat until no Pending notifications remain.
+3.⁠ ⁠Scheduler exits.
+
+---
+
+## Advantages
+
+•⁠  ⁠Simple implementation.
+•⁠  ⁠No duplicate processing.
+•⁠  ⁠No race conditions.
+•⁠  ⁠No distributed coordination.
+•⁠  ⁠Lowest implementation risk.
+
+---
+
+## Disadvantages
+
+•⁠  ⁠Only one pod participates.
+•⁠  ⁠Throughput limited to a single JVM.
+
+================================================================================
+
+# Option 2 - Multi-Pod Distributed Processing
+
+## a. Scheduler Execution
+
+1.⁠ ⁠All application pods start simultaneously.
+2.⁠ ⁠No ShedLock is used.
+3.⁠ ⁠Every pod participates in processing.
+
+---
+
+## b. Batch Claim
+
+1.⁠ ⁠Each pod atomically claims 100 Pending (⁠ STA201 ⁠) notifications.
+
+⁠ sql
+SELECT ...
+FROM ntfy_trk
+WHERE ntfy_sta_tx = 'STA201'
+ORDER BY schd_ts
+FOR UPDATE SKIP LOCKED
+LIMIT 100;
+ ⁠
+
+2.⁠ ⁠Database locks only the claimed rows.
+3.⁠ ⁠Other pods automatically skip locked rows.
+4.⁠ ⁠Claimed rows are updated to ⁠ STA204 (Processing) ⁠ (or remain locked if using the long transaction approach).
+5.⁠ ⁠Transaction is committed.
+
+---
+
+## c. Notification Processing
+
+1.⁠ ⁠Each pod processes only its claimed notifications.
+2.⁠ ⁠ExecutorService creates 5 worker threads.
+3.⁠ ⁠Email retries are executed within the same processing flow.
+
+---
+
+## d. Status Update
+
+1.⁠ ⁠Email Success → Update to ⁠ STA203 (Completed) ⁠.
+2.⁠ ⁠Email Failure → Update to ⁠ STA205 (Failed) ⁠.
+
+---
+
+## e. Continue Processing
+
+1.⁠ ⁠Pod atomically claims the next batch of 100 notifications.
+2.⁠ ⁠Repeat until no Pending notifications remain.
+3.⁠ ⁠Worker exits.
+
+---
+
+## f. Retry Processing
+
+1.⁠ ⁠Separate scheduled job fetches ⁠ STA205 (Failed) ⁠ notifications.
+2.⁠ ⁠Updates them back to ⁠ STA201 (Pending) ⁠ based on business policy.
+3.⁠ ⁠Notifications become eligible for the next scheduled batch.
+
+---
+
+## Advantages
+
+•⁠  ⁠Utilizes all pods.
+•⁠  ⁠Automatic load balancing.
+•⁠  ⁠No duplicate row claims.
+•⁠  ⁠Horizontally scalable.
+•⁠  ⁠Short database transactions.
+•⁠  ⁠Industry-standard distributed worker pattern.
+
+---
+
+## Disadvantages
+
+•⁠  ⁠Requires introducing ⁠ PROCESSING ⁠ and ⁠ FAILED ⁠ statuses.
+•⁠  ⁠Requires recovery strategy for stale Processing records.
+•⁠  ⁠Slightly higher implementation complexity.
